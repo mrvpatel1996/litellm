@@ -15631,6 +15631,14 @@ app.include_router(fallback_management_router)
 app.include_router(cache_settings_router)
 app.include_router(user_agent_analytics_router)
 app.include_router(enterprise_router)
+
+# ── Enterprise Open (Open-Source Enterprise Features) ──
+try:
+    from litellm.enterprise_open.router import enterprise_router as enterprise_open_router
+    app.include_router(enterprise_open_router)
+except ImportError:
+    pass  # Enterprise open features not installed
+
 app.include_router(ui_discovery_endpoints_router)
 # Eager: /models/{name}:method overlaps with the OpenAI /models endpoint.
 app.include_router(google_router)
