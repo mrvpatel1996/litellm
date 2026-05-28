@@ -3333,6 +3333,7 @@ class LlmProviders(str, Enum):
     LLAMA = "meta_llama"
     NSCALE = "nscale"
     PG_VECTOR = "pg_vector"
+    QDRANT = "qdrant"
     S3_VECTORS = "s3_vectors"
     HELICONE = "helicone"
     HYPERBOLIC = "hyperbolic"

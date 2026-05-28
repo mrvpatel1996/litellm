@@ -12,6 +12,7 @@ class SupportedVectorStoreIntegrations(str, Enum):
 
     BEDROCK = "bedrock"
     RAGFLOW = "ragflow"
+    QDRANT = "qdrant"
 
 
 class LiteLLM_VectorStoreConfig(TypedDict, total=False):

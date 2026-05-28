@@ -9055,6 +9055,12 @@ class ProviderConfigManager:
             )
 
             return MilvusVectorStoreConfig()
+        elif litellm.LlmProviders.QDRANT == provider:
+            from litellm.llms.qdrant.vector_stores.transformation import (
+                QdrantVectorStoreConfig,
+            )
+
+            return QdrantVectorStoreConfig()
         elif litellm.LlmProviders.GEMINI == provider:
             from litellm.llms.gemini.vector_stores.transformation import (
                 GeminiVectorStoreConfig,

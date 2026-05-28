@@ -25,12 +25,14 @@ def mount_enterprise_routes():
     from litellm.enterprise_open.audit.routes import audit_router
     from litellm.enterprise_open.pricing.routes import pricing_router
     from litellm.enterprise_open.multitenant.routes import tenant_router
+    from litellm.enterprise_open.vectordb.router import vectordb_router
 
     enterprise_router.include_router(saml_router, prefix="/saml", tags=["SAML SSO"])
     enterprise_router.include_router(rbac_router, prefix="/roles", tags=["RBAC"])
     enterprise_router.include_router(audit_router, prefix="/audit", tags=["Audit Logs"])
     enterprise_router.include_router(pricing_router, prefix="/pricing", tags=["Pricing & Billing"])
     enterprise_router.include_router(tenant_router, prefix="/tenants", tags=["Multi-Tenancy"])
+    enterprise_router.include_router(vectordb_router, tags=["Vector DB"])
 
     @enterprise_router.get("/health")
     async def enterprise_health():
@@ -43,6 +45,7 @@ def mount_enterprise_routes():
                 "audit": True,
                 "pricing": True,
                 "multi_tenancy": True,
+                "vectordb": True,
             },
         }
 
