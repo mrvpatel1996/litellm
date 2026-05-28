@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse, XMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from litellm.enterprise_open.config import SAMLProviderConfig
 from litellm.enterprise_open.saml.config import get_saml_store
@@ -156,7 +156,7 @@ async def saml_metadata(provider: str = Query(..., description="SAML provider na
         raise HTTPException(status_code=404, detail=f"SAML provider '{provider}' not found")
 
     metadata_xml = generate_sp_metadata(provider_config)
-    return XMLResponse(content=metadata_xml, media_type="application/xml")
+    return Response(content=metadata_xml, media_type="application/xml")
 
 
 @saml_router.post("/slo")

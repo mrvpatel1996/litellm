@@ -1,0 +1,40 @@
+model_list:
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-3.5-turbo
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: text-embedding-3-small
+    litellm_params:
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+general_settings:
+  master_key: sk-loc...1234
+
+  enterprise_settings:
+    enabled: true
+    saml_enabled: false
+    custom_pricing_enabled: true
+    enhanced_audit_enabled: true
+    custom_roles_enabled: true
+    multi_tenancy_enabled: true
+
+    vectordb:
+      backends:
+        qdrant:
+          api_base: "http://localhost:6333"
+          distance: "Cosine"
+          default_vector_size: 1536
+          text_field: "text"
+      routing:
+        default_backend: qdrant
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false

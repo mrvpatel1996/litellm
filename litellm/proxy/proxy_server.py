@@ -939,6 +939,20 @@ async def proxy_startup_event(app: FastAPI):  # noqa: PLR0915
     ## Initialize shared aiohttp session for connection reuse
     shared_aiohttp_session = await _initialize_shared_aiohttp_session()
 
+    # ── Enterprise Open: Initialize VectorDB service ──
+    try:
+        from litellm.enterprise_open.vectordb.config import EnterpriseVectorDBConfig
+        from litellm.enterprise_open.vectordb.service import VectorDBService
+
+        _ent_settings = general_settings.get("enterprise_settings", {}) if general_settings else {}
+        _vectordb_cfg = _ent_settings.get("vectordb", {})
+        if _vectordb_cfg:
+            _vdb_config = EnterpriseVectorDBConfig(**_vectordb_cfg)
+            _vdb_service = VectorDBService(_vdb_config)
+            app.state.enterprise_vectordb_service = _vdb_service
+    except Exception:
+        pass  # VectorDB not configured, skip
+
     # End of startup event
     yield
 
