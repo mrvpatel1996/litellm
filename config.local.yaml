@@ -16,17 +16,19 @@ model_list:
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  ui_access_mode: admin
+  admin_username: os.environ/UI_USERNAME
+  admin_password: os.environ/UI_PASSWORD
 
-  enterprise_settings:
-    vectordb:
-      backends:
-        - name: qdrant
-          type: qdrant
-          api_base: "http://localhost:6333"
-          api_key: ""
-          embedding_model: "nomic-embed-text"
-          default_distance: "Cosine"
-      routing:
-        rules:
-          - model_pattern: "*"
-            backend: qdrant
+# Register Qdrant as a vector store accessible via LiteLLM proxy
+vector_store_registry:
+  - vector_store_name: "countries"
+    litellm_params:
+      vector_store_id: "countries"
+      custom_llm_provider: "qdrant"
+      api_base: "http://localhost:6333"
+      litellm_embedding_model: "ollama/nomic-embed-text"
+      qdrant_distance: "Cosine"
+      qdrant_vector_size: 768
+      qdrant_text_field: "text"

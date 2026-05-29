@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Start LiteLLM proxy with proper env vars."""
+"""Start LiteLLM proxy with .env from the litellm folder."""
 import os
 import sys
+from pathlib import Path
 
-# Load just the OpenRouter key from .hermes/.env
-env_path = os.path.expanduser("~/.hermes/.env")
-with open(env_path) as f:
-    for line in f:
-        line = line.strip()
-        if line.startswith("OPENROUTER_API_KEY"):
-            key, val = line.split("=", 1)
-            os.environ[key] = val
-            break
+LITELLM_DIR = Path("/Users/atliqmini1/Desktop/litellm")
+env_file = LITELLM_DIR / ".env"
 
-os.environ["LITELLM_MASTER_KEY"] = "sk-loc...1234"
+# Load .env from litellm folder
+if env_file.exists():
+    with open(env_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, v = line.split("=", 1)
+                os.environ[k] = v
 
-os.chdir("/Users/atliqmini1/Desktop/litellm")
+os.chdir(str(LITELLM_DIR))
 sys.argv = ["litellm", "--config", "config.local.yaml", "--port", "4000"]
 
 from litellm.proxy.proxy_cli import run_server
