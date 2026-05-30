@@ -67,14 +67,22 @@ class QdrantVectorStoreConfig(BaseVectorStoreConfig):
     - QDRANT_API_KEY: API key for authentication
     - QDRANT_API_BASE: Base URL (e.g., https://your-cluster-url.qdrant.io or http://localhost:6333)
 
+    Embeddings are generated in-process via fastembed (no external embedding
+    service). Search uses the Qdrant Query API and supports dense-only or
+    hybrid (dense + sparse, fused with RRF) retrieval.
+
     litellm_params:
     - api_key: API key (overrides QDRANT_API_KEY)
     - api_base: Base URL (overrides QDRANT_API_BASE)
-    - litellm_embedding_model: Embedding model to use (required for search)
-    - litellm_embedding_config: Embedding config dict
+    - qdrant_search_mode: 'dense' (default) or 'hybrid' (dense + sparse RRF)
+    - fastembed_dense_model: dense model (default: BAAI/bge-small-en-v1.5)
+    - fastembed_sparse_model: sparse model (default: prithivida/Splade_PP_en_v1)
+    - qdrant_dense_vector_name: named dense vector (default: 'dense')
+    - qdrant_sparse_vector_name: named sparse vector (default: 'sparse')
     - qdrant_distance: Distance metric ('Cosine', 'Euclid', 'Dot') default: Cosine
-    - qdrant_vector_size: Vector dimension size (default: auto-detect from embedding)
+    - qdrant_vector_size: Vector dimension size (default: 384 for BGE-small)
     - qdrant_text_field: Payload field name for text content (default: 'text')
+    - qdrant_score_threshold: Minimum score filter
     - qdrant_collection_config: Additional collection configuration
     """
 
