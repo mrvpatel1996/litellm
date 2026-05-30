@@ -3,10 +3,13 @@ Vector DB Service Layer.
 
 Unified interface for managing Qdrant, Milvus, and pgvector backends.
 Handles health checks, collection management, and routing.
+
+Uses a single persistent ``httpx.AsyncClient`` (created lazily, reused across
+calls, closed at shutdown) instead of a fresh client per request.
 """
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -25,12 +28,25 @@ class VectorDBService:
         self.config = config
         self._health_cache: Dict[str, VectorDBHealthStatus] = {}
         self._last_health_check: Dict[str, float] = {}
+        self._client: Optional[httpx.AsyncClient] = None
+
+    # ─── Client lifecycle ──────────────────────────────────────────
+
+    def _get_client(self, timeout: int) -> httpx.AsyncClient:
+        """Return a persistent AsyncClient, recreating it if closed."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=timeout)
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the persistent client (call at shutdown)."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
 
     # ─── Health Checks ─────────────────────────────────────────────
 
-    async def check_health(
-        self, backend: VectorDBBackend
-    ) -> VectorDBHealthStatus:
+    async def check_health(self, backend: VectorDBBackend) -> VectorDBHealthStatus:
         """Check health of a specific backend."""
         start = time.time()
         try:
@@ -76,37 +92,37 @@ class VectorDBService:
                 connected=False,
                 error="Qdrant not configured",
             )
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            headers = {}
-            if cfg.api_key:
-                headers["api-key"] = cfg.api_key
-            resp = await client.get(f"{cfg.api_base}/healthz", headers=headers)
-            latency = (time.time() - start) * 1000
-            if resp.status_code == 200:
-                title = resp.json().get("title", "")
-                version = resp.json().get("version", "")
-                # Get collections count
-                collections_resp = await client.get(
-                    f"{cfg.api_base}/collections", headers=headers
-                )
-                collections_count = None
-                if collections_resp.status_code == 200:
-                    collections_count = len(
-                        collections_resp.json().get("result", {}).get("collections", [])
-                    )
-                return VectorDBHealthStatus(
-                    backend=VectorDBBackend.QDRANT,
-                    connected=True,
-                    latency_ms=round(latency, 2),
-                    collections_count=collections_count,
-                    version=version or title,
+        client = self._get_client(cfg.timeout)
+        headers = {}
+        if cfg.api_key:
+            headers["api-key"] = cfg.api_key
+        resp = await client.get(f"{cfg.api_base}/healthz", headers=headers)
+        latency = (time.time() - start) * 1000
+        if resp.status_code == 200:
+            title = resp.json().get("title", "")
+            version = resp.json().get("version", "")
+            # Get collections count
+            collections_resp = await client.get(
+                f"{cfg.api_base}/collections", headers=headers
+            )
+            collections_count = None
+            if collections_resp.status_code == 200:
+                collections_count = len(
+                    collections_resp.json().get("result", {}).get("collections", [])
                 )
             return VectorDBHealthStatus(
                 backend=VectorDBBackend.QDRANT,
-                connected=False,
-                error=f"HTTP {resp.status_code}",
+                connected=True,
                 latency_ms=round(latency, 2),
+                collections_count=collections_count,
+                version=version or title,
             )
+        return VectorDBHealthStatus(
+            backend=VectorDBBackend.QDRANT,
+            connected=False,
+            error=f"HTTP {resp.status_code}",
+            latency_ms=round(latency, 2),
+        )
 
     async def _check_milvus_health(self, start: float) -> VectorDBHealthStatus:
         cfg = self.config.get_milvus_config()
@@ -116,29 +132,29 @@ class VectorDBService:
                 connected=False,
                 error="Milvus not configured",
             )
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            headers = {"Content-Type": "application/json"}
-            if cfg.api_key:
-                headers["Authorization"] = f"Bearer {cfg.api_key}"
-            resp = await client.get(
-                f"{cfg.api_base}/v2/vectordb/collections/list",
-                headers=headers,
-            )
-            latency = (time.time() - start) * 1000
-            if resp.status_code == 200:
-                data = resp.json().get("data", [])
-                return VectorDBHealthStatus(
-                    backend=VectorDBBackend.MILVUS,
-                    connected=True,
-                    latency_ms=round(latency, 2),
-                    collections_count=len(data) if isinstance(data, list) else None,
-                )
+        client = self._get_client(cfg.timeout)
+        headers = {"Content-Type": "application/json"}
+        if cfg.api_key:
+            headers["Authorization"] = f"Bearer {cfg.api_key}"
+        resp = await client.get(
+            f"{cfg.api_base}/v2/vectordb/collections/list",
+            headers=headers,
+        )
+        latency = (time.time() - start) * 1000
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
             return VectorDBHealthStatus(
                 backend=VectorDBBackend.MILVUS,
-                connected=False,
-                error=f"HTTP {resp.status_code}",
+                connected=True,
                 latency_ms=round(latency, 2),
+                collections_count=len(data) if isinstance(data, list) else None,
             )
+        return VectorDBHealthStatus(
+            backend=VectorDBBackend.MILVUS,
+            connected=False,
+            error=f"HTTP {resp.status_code}",
+            latency_ms=round(latency, 2),
+        )
 
     async def _check_pgvector_health(self, start: float) -> VectorDBHealthStatus:
         cfg = self.config.get_pgvector_config()
@@ -148,27 +164,27 @@ class VectorDBService:
                 connected=False,
                 error="pgvector not configured",
             )
-        async with httpx.AsyncClient(timeout=30) as client:
-            headers = {"Content-Type": "application/json"}
-            if cfg.api_key:
-                headers["Authorization"] = f"Bearer {cfg.api_key}"
-            resp = await client.get(
-                f"{cfg.api_base}/v1/vector_stores",
-                headers=headers,
-            )
-            latency = (time.time() - start) * 1000
-            if resp.status_code in (200, 201):
-                return VectorDBHealthStatus(
-                    backend=VectorDBBackend.PGVECTOR,
-                    connected=True,
-                    latency_ms=round(latency, 2),
-                )
+        client = self._get_client(30)
+        headers = {"Content-Type": "application/json"}
+        if cfg.api_key:
+            headers["Authorization"] = f"Bearer {cfg.api_key}"
+        resp = await client.get(
+            f"{cfg.api_base}/v1/vector_stores",
+            headers=headers,
+        )
+        latency = (time.time() - start) * 1000
+        if resp.status_code in (200, 201):
             return VectorDBHealthStatus(
                 backend=VectorDBBackend.PGVECTOR,
-                connected=False,
-                error=f"HTTP {resp.status_code}",
+                connected=True,
                 latency_ms=round(latency, 2),
             )
+        return VectorDBHealthStatus(
+            backend=VectorDBBackend.PGVECTOR,
+            connected=False,
+            error=f"HTTP {resp.status_code}",
+            latency_ms=round(latency, 2),
+        )
 
     # ─── Collection Management ─────────────────────────────────────
 
@@ -188,101 +204,99 @@ class VectorDBService:
         cfg = self.config.get_qdrant_config()
         if not cfg:
             return []
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            headers = {}
-            if cfg.api_key:
-                headers["api-key"] = cfg.api_key
-            resp = await client.get(
-                f"{cfg.api_base}/collections", headers=headers
+        client = self._get_client(cfg.timeout)
+        headers = {}
+        if cfg.api_key:
+            headers["api-key"] = cfg.api_key
+        resp = await client.get(f"{cfg.api_base}/collections", headers=headers)
+        if resp.status_code != 200:
+            return []
+        collections = resp.json().get("result", {}).get("collections", [])
+        results = []
+        for col in collections:
+            name = col.get("name", "")
+            # Get collection info
+            info_resp = await client.get(
+                f"{cfg.api_base}/collections/{name}", headers=headers
             )
-            if resp.status_code != 200:
-                return []
-            collections = resp.json().get("result", {}).get("collections", [])
-            results = []
-            for col in collections:
-                name = col.get("name", "")
-                # Get collection info
-                info_resp = await client.get(
-                    f"{cfg.api_base}/collections/{name}", headers=headers
-                )
-                if info_resp.status_code == 200:
-                    info = info_resp.json().get("result", {})
-                    config = info.get("config", {})
-                    params = config.get("params", {})
-                    vectors = params.get("vectors", {})
-                    vector_size = vectors.get("size", 0)
-                    distance = vectors.get("distance", "Unknown")
-                    points_count = info.get("points_count", 0)
-                    status = info.get("status", "unknown")
-                    results.append(
-                        VectorDBCollectionInfo(
-                            name=name,
-                            backend=VectorDBBackend.QDRANT,
-                            vector_size=vector_size,
-                            distance=distance,
-                            points_count=points_count,
-                            status=status,
-                        )
+            if info_resp.status_code == 200:
+                info = info_resp.json().get("result", {})
+                config = info.get("config", {})
+                params = config.get("params", {})
+                vectors = params.get("vectors", {})
+                vector_size = vectors.get("size", 0)
+                distance = vectors.get("distance", "Unknown")
+                points_count = info.get("points_count", 0)
+                status = info.get("status", "unknown")
+                results.append(
+                    VectorDBCollectionInfo(
+                        name=name,
+                        backend=VectorDBBackend.QDRANT,
+                        vector_size=vector_size,
+                        distance=distance,
+                        points_count=points_count,
+                        status=status,
                     )
-            return results
+                )
+        return results
 
     async def _list_milvus_collections(self) -> List[VectorDBCollectionInfo]:
         cfg = self.config.get_milvus_config()
         if not cfg:
             return []
-        async with httpx.AsyncClient(timeout=cfg.timeout) as client:
-            headers = {"Content-Type": "application/json"}
-            if cfg.api_key:
-                headers["Authorization"] = f"Bearer {cfg.api_key}"
-            resp = await client.post(
-                f"{cfg.api_base}/v2/vectordb/collections/list",
-                headers=headers,
-                json={},
-            )
-            if resp.status_code != 200:
-                return []
-            data = resp.json().get("data", [])
-            results = []
-            for col in data:
-                name = col.get("collectionName", col.get("name", ""))
-                results.append(
-                    VectorDBCollectionInfo(
-                        name=name,
-                        backend=VectorDBBackend.MILVUS,
-                        vector_size=0,  # Need describe call
-                        distance="Unknown",
-                        metadata=col,
-                    )
+        client = self._get_client(cfg.timeout)
+        headers = {"Content-Type": "application/json"}
+        if cfg.api_key:
+            headers["Authorization"] = f"Bearer {cfg.api_key}"
+        resp = await client.post(
+            f"{cfg.api_base}/v2/vectordb/collections/list",
+            headers=headers,
+            json={},
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json().get("data", [])
+        results = []
+        for col in data:
+            name = col.get("collectionName", col.get("name", ""))
+            results.append(
+                VectorDBCollectionInfo(
+                    name=name,
+                    backend=VectorDBBackend.MILVUS,
+                    vector_size=0,  # Need describe call
+                    distance="Unknown",
+                    metadata=col,
                 )
-            return results
+            )
+        return results
 
     async def _list_pgvector_collections(self) -> List[VectorDBCollectionInfo]:
         cfg = self.config.get_pgvector_config()
         if not cfg:
             return []
-        async with httpx.AsyncClient(timeout=30) as client:
-            headers = {"Content-Type": "application/json"}
-            if cfg.api_key:
-                headers["Authorization"] = f"Bearer {cfg.api_key}"
-            resp = await client.get(
-                f"{cfg.api_base}/v1/vector_stores",
-                headers=headers,
-            )
-            if resp.status_code != 200:
-                return []
-            data = resp.json().get("data", [])
-            results = []
-            for store in data:
-                results.append(
-                    VectorDBCollectionInfo(
-                        name=store.get("id", ""),
-                        backend=VectorDBBackend.PGVECTOR,
-                        vector_size=cfg.embedding_dim,
-                        distance="Cosine",
-                        metadata=store,
-                    )
+        client = self._get_client(30)
+        headers = {"Content-Type": "application/json"}
+        if cfg.api_key:
+            headers["Authorization"] = f"Bearer {cfg.api_key}"
+        resp = await client.get(
+            f"{cfg.api_base}/v1/vector_stores",
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json().get("data", [])
+        results = []
+        for store in data:
+            results.append(
+                VectorDBCollectionInfo(
+                    name=store.get("id", ""),
+                    backend=VectorDBBackend.PGVECTOR,
+                    vector_size=cfg.embedding_dim,
+                    distance="Cosine",
+                    metadata=store,
                 )
-            return results
+            )
+        return results
 
     # ─── Routing ───────────────────────────────────────────────────
 

@@ -84,6 +84,11 @@ utils = [
     "numpydoc==1.8.0",
 ]
 caching = ["diskcache==5.6.3"]
+fastembed = [
+    # In-process dense (BGE) + sparse (SPLADE) embeddings. Imported lazily in
+    # litellm/llms/fastembed so litellm core remains usable without it.
+    "fastembed>=0.4.0",
+]
 semantic-router = [
     "semantic-router==0.1.12; python_version < '3.14'",
     "aurelio-sdk==0.0.19; python_version < '3.14'",

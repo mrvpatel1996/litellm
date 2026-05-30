@@ -29,7 +29,9 @@ RUN apk add --no-cache \
 
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_LINK_MODE=copy \
-    PATH="/app/.venv/bin:${PATH}"
+    PATH="/app/.venv/bin:${PATH}" \
+    FASTEMBED_CACHE_PATH=/app/.fastembed_cache \
+    HF_HOME=/app/.fastembed_cache/hf
 
 # Copy dependency metadata first for layer caching
 COPY pyproject.toml uv.lock ./
@@ -42,6 +44,7 @@ RUN uv sync --frozen --no-install-project --no-install-workspace --no-default-gr
     --extra proxy-runtime \
     --extra extra_proxy \
     --extra semantic-router \
+    --extra fastembed \
     --python python3
 
 # Copy full source tree
@@ -56,7 +59,12 @@ RUN uv sync --frozen --no-default-groups --no-editable \
     --extra proxy-runtime \
     --extra extra_proxy \
     --extra semantic-router \
+    --extra fastembed \
     --python python3
+
+# Pre-download fastembed ONNX models so they are baked into the image
+# (no cold-start download on first embedding call).
+RUN python -c "from fastembed import TextEmbedding, SparseTextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5'); SparseTextEmbedding('prithivida/Splade_PP_en_v1')"
 
 RUN prisma generate --schema=./schema.prisma
 
@@ -81,8 +89,11 @@ RUN apk add --no-cache bash openssl tzdata nodejs npm python3 libsndfile && \
     { apk del --no-cache npm 2>/dev/null || true; }
 
 WORKDIR /app
-ENV PATH="/app/.venv/bin:${PATH}"
+ENV PATH="/app/.venv/bin:${PATH}" \
+    FASTEMBED_CACHE_PATH=/app/.fastembed_cache \
+    HF_HOME=/app/.fastembed_cache/hf
 
+# /app (including the pre-downloaded fastembed model cache) is copied below.
 COPY --from=builder /app /app
 # Prisma binaries live in $HOME/.cache (default prisma-python location),
 # which is /root/.cache here. Copy only the Prisma subdirs — copying the
