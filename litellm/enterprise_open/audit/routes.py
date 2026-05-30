@@ -6,7 +6,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import PlainTextResponse
 
 from litellm.enterprise_open.audit.service import get_audit_service
 
@@ -25,7 +25,7 @@ async def query_audit_logs(
     end_date: Optional[str] = Query(None, description="ISO datetime"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
-    sort_by: str = Query("created_at"),
+    sort_by: str = Query("updated_at"),
     sort_order: str = Query("desc"),
 ):
     """Query audit logs with filters and pagination."""
@@ -63,7 +63,9 @@ async def audit_summary(
     request: Request,
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
-    group_by: str = Query("action", description="Group by: action, table_name, changed_by"),
+    group_by: str = Query(
+        "action", description="Group by: action, table_name, changed_by"
+    ),
 ):
     """Get aggregated audit log statistics."""
     service = get_audit_service()

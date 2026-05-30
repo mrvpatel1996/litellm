@@ -6,10 +6,48 @@ import csv
 import io
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# The LiteLLM_AuditLog Prisma model uses `updated_at` as its timestamp column
+# (there is no `created_at`) and `updated_values` for the post-change value
+# (there is no `after_value`). Map the friendlier API names onto these.
+_AUDIT_TIMESTAMP_FIELD = "updated_at"
+_AUDIT_SORTABLE_FIELDS = {
+    "updated_at",
+    "action",
+    "table_name",
+    "object_id",
+    "changed_by",
+}
+# Real, serializable columns on LiteLLM_AuditLog.
+_AUDIT_SERIALIZE_FIELDS = [
+    "id",
+    "action",
+    "table_name",
+    "object_id",
+    "changed_by",
+    "changed_by_api_key",
+    "before_value",
+    "updated_values",
+    "updated_at",
+]
+
+
+def _resolve_sort_field(sort_by: str) -> str:
+    """Map a requested sort field to a real, sortable column.
+
+    Accepts the legacy alias ``created_at`` and falls back to the timestamp
+    column for anything not in the allowlist (prevents Prisma 500s on unknown
+    fields).
+    """
+    if sort_by in ("created_at", ""):
+        return _AUDIT_TIMESTAMP_FIELD
+    if sort_by in _AUDIT_SORTABLE_FIELDS:
+        return sort_by
+    return _AUDIT_TIMESTAMP_FIELD
 
 
 class AuditLogService:
@@ -22,6 +60,7 @@ class AuditLogService:
         """Lazy-load Prisma client."""
         if self._prisma is None:
             from litellm.proxy.proxy_server import prisma_client
+
             self._prisma = prisma_client
         return self._prisma
 
@@ -58,12 +97,12 @@ class AuditLogService:
         if object_id:
             where["object_id"] = object_id
         if start_date or end_date:
-            created_at_filter: Dict[str, Any] = {}
+            ts_filter: Dict[str, Any] = {}
             if start_date:
-                created_at_filter["gte"] = start_date
+                ts_filter["gte"] = start_date
             if end_date:
-                created_at_filter["lte"] = end_date
-            where["created_at"] = created_at_filter
+                ts_filter["lte"] = end_date
+            where[_AUDIT_TIMESTAMP_FIELD] = ts_filter
 
         # Count total matching logs
         total = await prisma.db.litellm_auditlog.count(where=where)
@@ -71,9 +110,9 @@ class AuditLogService:
         # Calculate pagination
         skip = (page - 1) * page_size
 
-        # Determine sort
+        # Determine sort (guard against unknown columns)
         order = "desc" if sort_order == "desc" else "asc"
-        order_by = {sort_by: order}
+        order_by = {_resolve_sort_field(sort_by): order}
 
         # Fetch logs
         logs = await prisma.db.litellm_auditlog.find_many(
@@ -87,9 +126,7 @@ class AuditLogService:
         log_list = []
         for log in logs:
             log_dict = {}
-            for field in ["id", "action", "table_name", "object_id", "changed_by",
-                          "changed_by_api_key", "before_value", "after_value",
-                          "created_at", "updated_at"]:
+            for field in _AUDIT_SERIALIZE_FIELDS:
                 val = getattr(log, field, None)
                 if val is not None:
                     if isinstance(val, datetime):
@@ -116,9 +153,7 @@ class AuditLogService:
             return None
 
         log_dict = {}
-        for field in ["id", "action", "table_name", "object_id", "changed_by",
-                      "changed_by_api_key", "before_value", "after_value",
-                      "created_at", "updated_at"]:
+        for field in _AUDIT_SERIALIZE_FIELDS:
             val = getattr(log, field, None)
             if val is not None:
                 if isinstance(val, datetime):
@@ -146,12 +181,12 @@ class AuditLogService:
 
         where: Dict[str, Any] = {}
         if start_date or end_date:
-            created_at_filter: Dict[str, Any] = {}
+            ts_filter: Dict[str, Any] = {}
             if start_date:
-                created_at_filter["gte"] = start_date
+                ts_filter["gte"] = start_date
             if end_date:
-                created_at_filter["lte"] = end_date
-            where["created_at"] = created_at_filter
+                ts_filter["lte"] = end_date
+            where[_AUDIT_TIMESTAMP_FIELD] = ts_filter
 
         # Get all matching logs (for aggregation — Prisma doesn't have groupBy in this version)
         logs = await prisma.db.litellm_auditlog.find_many(where=where)
@@ -232,7 +267,7 @@ class AuditLogService:
                 "object_id": object_id,
                 "changed_by": changed_by,
                 "before_value": before_value,
-                "after_value": after_value,
+                "updated_values": after_value,
                 "changed_by_api_key": changed_by_api_key,
             }
         )
