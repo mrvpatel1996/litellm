@@ -5474,6 +5474,16 @@ def embedding(  # noqa: PLR0915
                 optional_params=optional_params,
                 model_response=EmbeddingResponse(),
             )
+        elif custom_llm_provider == "fastembed":
+            from litellm.llms.fastembed.embedding_handler import fastembed_embedding
+
+            if isinstance(input, str):
+                input = [input]
+            response = fastembed_embedding(
+                model=model,
+                input=input,
+                model_response=EmbeddingResponse(),
+            )
         elif custom_llm_provider == "sagemaker":
             response = sagemaker_llm.embedding(
                 model=model,

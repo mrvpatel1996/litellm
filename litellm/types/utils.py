@@ -3335,6 +3335,7 @@ class LlmProviders(str, Enum):
     PG_VECTOR = "pg_vector"
     QDRANT = "qdrant"
     S3_VECTORS = "s3_vectors"
+    FASTEMBED = "fastembed"
     HELICONE = "helicone"
     HYPERBOLIC = "hyperbolic"
     RECRAFT = "recraft"
