@@ -16,8 +16,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import httpx
 
-import litellm
 from litellm.llms.base_llm.vector_store.transformation import BaseVectorStoreConfig
+from litellm.llms.fastembed.embed import (
+    DEFAULT_DENSE_MODEL,
+    DEFAULT_SPARSE_MODEL,
+    get_fastembed_service,
+)
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.router import GenericLiteLLMParams
 from litellm.types.vector_stores import (
@@ -128,6 +132,56 @@ class QdrantVectorStoreConfig(BaseVectorStoreConfig):
                 optional_params[param] = value
         return optional_params
 
+    def _build_query_request(
+        self,
+        vector_store_id: str,
+        optional_params: dict,
+        litellm_params: dict,
+        dense_vec: List[float],
+        sparse_vec: Optional[Dict[str, Any]],
+        api_base: str,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Build a Qdrant Query API request body for dense or hybrid search.
+
+        Dense mode searches the named dense vector directly. Hybrid mode
+        prefetches the dense + sparse vectors and fuses them server-side with
+        Reciprocal Rank Fusion (RRF).
+        """
+        collection_name = vector_store_id
+        url = f"{api_base}/collections/{collection_name}/points/query"
+        limit = optional_params.get("limit", 5)
+        mode = litellm_params.get("qdrant_search_mode", "dense")
+        dense_name = litellm_params.get("qdrant_dense_vector_name", "dense")
+        sparse_name = litellm_params.get("qdrant_sparse_vector_name", "sparse")
+
+        body: Dict[str, Any] = {"limit": limit, "with_payload": True}
+
+        if mode == "hybrid":
+            body["prefetch"] = [
+                {"query": dense_vec, "using": dense_name, "limit": limit},
+                {"query": sparse_vec, "using": sparse_name, "limit": limit},
+            ]
+            body["query"] = {"fusion": "rrf"}
+        else:
+            body["query"] = dense_vec
+            body["using"] = dense_name
+
+        qdrant_filter = optional_params.get("filter")
+        if qdrant_filter:
+            body["filter"] = qdrant_filter
+
+        score_threshold = optional_params.get(
+            "score_threshold", litellm_params.get("qdrant_score_threshold")
+        )
+        if score_threshold is not None:
+            body["score_threshold"] = score_threshold
+
+        search_params = optional_params.get("search_params")
+        if search_params:
+            body["params"] = search_params
+
+        return url, body
+
     def get_complete_url(
         self,
         api_base: Optional[str],
@@ -159,78 +213,32 @@ class QdrantVectorStoreConfig(BaseVectorStoreConfig):
 
         Generates embeddings using litellm.embeddings and constructs Qdrant search request.
         """
-        # Convert query to string if it's a list
         if isinstance(query, list):
             query = " ".join(query)
 
-        # Get embedding model from litellm_params (required for search)
-        embedding_model = litellm_params.get("litellm_embedding_model")
-        if not embedding_model:
-            raise ValueError(
-                "embedding_model is required in litellm_params for Qdrant. "
-                "Example: litellm_params['litellm_embedding_model'] = 'openai/text-embedding-3-small'"
-            )
+        mode = litellm_params.get("qdrant_search_mode", "dense")
+        dense_model = litellm_params.get("fastembed_dense_model", DEFAULT_DENSE_MODEL)
+        sparse_model = litellm_params.get(
+            "fastembed_sparse_model", DEFAULT_SPARSE_MODEL
+        )
+        service = get_fastembed_service(dense_model, sparse_model)
 
-        embedding_config = litellm_params.get("litellm_embedding_config", {})
+        dense_vec = service.embed_dense([query])[0]
+        sparse_vec = service.embed_sparse([query])[0] if mode == "hybrid" else None
 
-        # Generate embedding for the query
-        try:
-            embedding_response = litellm.embedding(
-                model=embedding_model,
-                input=[query],
-                **embedding_config,
-            )
-            query_vector = embedding_response.data[0]["embedding"]
-        except Exception as e:
-            raise Exception(f"Failed to generate embedding for Qdrant search: {str(e)}")
-
-        # Collection name = vector_store_id
-        collection_name = vector_store_id
-        url = f"{api_base}/collections/{collection_name}/points/search"
-
-        # Get text field name for payload projection
-        text_field = litellm_params.get("qdrant_text_field", "text")
-
-        # Build the Qdrant search request body
-        limit = vector_store_search_optional_params.get("limit", 5)
-        score_threshold = vector_store_search_optional_params.get(
-            "score_threshold",
-            litellm_params.get("qdrant_score_threshold"),
+        url, request_body = self._build_query_request(
+            vector_store_id=vector_store_id,
+            optional_params=vector_store_search_optional_params,
+            litellm_params=litellm_params,
+            dense_vec=dense_vec,
+            sparse_vec=sparse_vec,
+            api_base=api_base,
         )
 
-        request_body: Dict[str, Any] = {
-            "vector": query_vector,
-            "limit": limit,
-            "with_payload": True,
-        }
-
-        # Add optional filter
-        qdrant_filter = vector_store_search_optional_params.get("filter")
-        if qdrant_filter:
-            request_body["filter"] = qdrant_filter
-
-        # Add score threshold
-        if score_threshold is not None:
-            request_body["score_threshold"] = score_threshold
-
-        # Add search params (hnsw_ef, exact, etc.)
-        search_params = vector_store_search_optional_params.get("search_params")
-        if search_params:
-            request_body["params"] = search_params
-
-        # Add consistency
-        consistency = vector_store_search_optional_params.get("consistency")
-        if consistency:
-            request_body["consistency"] = consistency
-
-        # Add extra body params
         if extra_body:
             request_body.update(extra_body)
 
-        # Update logging
         litellm_logging_obj.model_call_details["input"] = query
-        litellm_logging_obj.model_call_details["embedding_model"] = embedding_model
-
         return url, request_body
 
     async def atransform_search_vector_store_request(
@@ -249,58 +257,31 @@ class QdrantVectorStoreConfig(BaseVectorStoreConfig):
         if isinstance(query, list):
             query = " ".join(query)
 
-        embedding_model = litellm_params.get("litellm_embedding_model")
-        if not embedding_model:
-            raise ValueError(
-                "embedding_model is required in litellm_params for Qdrant. "
-                "Example: litellm_params['litellm_embedding_model'] = 'openai/text-embedding-3-small'"
-            )
+        mode = litellm_params.get("qdrant_search_mode", "dense")
+        dense_model = litellm_params.get("fastembed_dense_model", DEFAULT_DENSE_MODEL)
+        sparse_model = litellm_params.get(
+            "fastembed_sparse_model", DEFAULT_SPARSE_MODEL
+        )
+        service = get_fastembed_service(dense_model, sparse_model)
 
-        embedding_config = litellm_params.get("litellm_embedding_config", {})
-
-        try:
-            embedding_response = await litellm.aembedding(
-                model=embedding_model,
-                input=[query],
-                **embedding_config,
-            )
-            query_vector = embedding_response.data[0]["embedding"]
-        except Exception as e:
-            raise Exception(f"Failed to generate embedding for Qdrant search: {str(e)}")
-
-        collection_name = vector_store_id
-        url = f"{api_base}/collections/{collection_name}/points/search"
-
-        text_field = litellm_params.get("qdrant_text_field", "text")
-        limit = vector_store_search_optional_params.get("limit", 5)
-        score_threshold = vector_store_search_optional_params.get(
-            "score_threshold",
-            litellm_params.get("qdrant_score_threshold"),
+        dense_vec = (await service.aembed_dense([query]))[0]
+        sparse_vec = (
+            (await service.aembed_sparse([query]))[0] if mode == "hybrid" else None
         )
 
-        request_body: Dict[str, Any] = {
-            "vector": query_vector,
-            "limit": limit,
-            "with_payload": True,
-        }
-
-        qdrant_filter = vector_store_search_optional_params.get("filter")
-        if qdrant_filter:
-            request_body["filter"] = qdrant_filter
-
-        if score_threshold is not None:
-            request_body["score_threshold"] = score_threshold
-
-        search_params = vector_store_search_optional_params.get("search_params")
-        if search_params:
-            request_body["params"] = search_params
+        url, request_body = self._build_query_request(
+            vector_store_id=vector_store_id,
+            optional_params=vector_store_search_optional_params,
+            litellm_params=litellm_params,
+            dense_vec=dense_vec,
+            sparse_vec=sparse_vec,
+            api_base=api_base,
+        )
 
         if extra_body:
             request_body.update(extra_body)
 
         litellm_logging_obj.model_call_details["input"] = query
-        litellm_logging_obj.model_call_details["embedding_model"] = embedding_model
-
         return url, request_body
 
     def transform_search_vector_store_response(
@@ -322,8 +303,14 @@ class QdrantVectorStoreConfig(BaseVectorStoreConfig):
         """
         try:
             response_json = response.json()
-            results = response_json.get("result", [])
-            if not isinstance(results, list):
+            result = response_json.get("result", [])
+            # Query API returns {"result": {"points": [...]}}; the legacy search
+            # API returns {"result": [...]}.
+            if isinstance(result, dict):
+                results = result.get("points", [])
+            elif isinstance(result, list):
+                results = result
+            else:
                 results = []
 
             # Get text field name
@@ -375,30 +362,30 @@ class QdrantVectorStoreConfig(BaseVectorStoreConfig):
 
         Creates a new collection with the specified vector configuration.
         """
-        collection_name = vector_store_create_optional_params.get(
-            "vector_store_name", "default"
-        )
+        params = vector_store_create_optional_params
+        collection_name = params.get("vector_store_name", "default")
         url = f"{api_base}/collections/{collection_name}"
 
-        # Get vector size and distance from params
-        vector_size = vector_store_create_optional_params.get(
-            "qdrant_vector_size", 1536
-        )
-        distance = vector_store_create_optional_params.get(
-            "qdrant_distance", "Cosine"
-        )
+        vector_size = params.get("qdrant_vector_size", 384)
+        distance = params.get("qdrant_distance", "Cosine")
+        dense_name = params.get("qdrant_dense_vector_name", "dense")
+        sparse_name = params.get("qdrant_sparse_vector_name", "sparse")
+        mode = params.get("qdrant_search_mode", "dense")
 
-        request_body = {
+        request_body: Dict[str, Any] = {
             "vectors": {
-                "size": vector_size,
-                "distance": distance,
-            },
+                dense_name: {
+                    "size": vector_size,
+                    "distance": distance,
+                    "hnsw_config": {"m": 16, "ef_construct": 100},
+                }
+            }
         }
+        if mode == "hybrid":
+            request_body["sparse_vectors"] = {sparse_name: {}}
 
-        # Add optional collection config
-        collection_config = vector_store_create_optional_params.get(
-            "qdrant_collection_config", {}
-        )
+        # Add optional collection config (e.g. quantization, on-disk payload)
+        collection_config = params.get("qdrant_collection_config", {})
         if collection_config:
             request_body.update(collection_config)
 
@@ -424,10 +411,6 @@ class QdrantVectorStoreConfig(BaseVectorStoreConfig):
                     status="completed",
                 )
             else:
-                raise Exception(
-                    f"Qdrant collection creation failed: {response_json}"
-                )
+                raise Exception(f"Qdrant collection creation failed: {response_json}")
         except Exception as e:
-            raise Exception(
-                f"Failed to parse Qdrant create response: {str(e)}"
-            )
+            raise Exception(f"Failed to parse Qdrant create response: {str(e)}")
