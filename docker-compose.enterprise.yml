@@ -1,0 +1,86 @@
+# ── LiteLLM Enterprise Fork ── Full Stack Docker Compose ──
+#
+# Usage:
+#   docker compose -f docker-compose.enterprise.yml up -d
+#
+# This starts:
+#   - LiteLLM proxy (port 4000) with enterprise_open modules
+#   - PostgreSQL (port 5434) for DB features (UI, keys, audit)
+#   - Qdrant (port 6333) for vector store
+#
+# First run:
+#   1. Copy .env.example to .env and fill in your keys
+#   2. docker compose -f docker-compose.enterprise.yml up -d
+#   3. Wait ~30s for all services to be healthy
+#   4. Access UI at http://localhost:4000/ui
+
+services:
+  litellm:
+    build:
+      context: .
+      dockerfile: Dockerfile.enterprise
+    image: litellm-enterprise:local
+    container_name: litellm-enterprise
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: "postgresql://litellm:litellm123@db:5432/litellm"
+      LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-1234}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      UI_USERNAME: "${UI_USERNAME:-admin}"
+      UI_PASSWORD: "${UI_PASSWORD:-admin}"
+      STORE_MODEL_IN_DB: "True"
+    volumes:
+      # Mount config for easy editing without rebuild
+      - ./config.docker.yaml:/app/config.local.yaml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')\""
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  db:
+    image: postgres:16-alpine
+    container_name: litellm-enterprise-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: litellm123
+    ports:
+      - "5434:5432"
+    volumes:
+      - litellm_enterprise_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: litellm-enterprise-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - litellm_enterprise_qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  litellm_enterprise_pgdata:
+  litellm_enterprise_qdrant:

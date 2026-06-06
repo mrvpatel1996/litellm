@@ -1,0 +1,81 @@
+# ── LiteLLM Enterprise Fork ── Local Docker Build ──
+# Uses standard Docker Hub images (no pinned SHA digests that expire).
+#
+# Build:
+#   docker build -t litellm-enterprise:local -f Dockerfile.enterprise .
+#
+# Run (with docker-compose):
+#   docker compose -f docker-compose.enterprise.yml up -d
+#
+# Or standalone:
+#   docker run -p 4000:4000 --env-file .env litellm-enterprise:local
+
+# ── Stage 1: Build ──
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --upgrade pip uv
+
+# Copy dependency metadata first for layer caching
+COPY pyproject.toml uv.lock ./
+COPY enterprise/pyproject.toml enterprise/
+COPY litellm-proxy-extras/pyproject.toml litellm-proxy-extras/
+
+# Install dependencies (cached unless pyproject.toml/uv.lock change)
+RUN uv sync --frozen --no-install-project --no-install-workspace \
+    --no-default-groups --no-editable \
+    --extra proxy \
+    --extra proxy-runtime \
+    --extra extra_proxy \
+    --extra fastembed \
+    --python python3.12
+
+# Copy full source tree
+COPY . .
+
+# Install project packages
+RUN uv sync --frozen --no-default-groups --no-editable \
+    --extra proxy \
+    --extra proxy-runtime \
+    --extra extra_proxy \
+    --extra fastembed \
+    --python python3.12
+
+# Pre-download fastembed ONNX models (bakes into image, no cold-start)
+RUN .venv/bin/python -c "from fastembed import TextEmbedding, SparseTextEmbedding; \
+    TextEmbedding('BAAI/bge-small-en-v1.5'); \
+    SparseTextEmbedding('prithivida/Splade_PP_en_v1')" || true
+
+# Generate Prisma client
+RUN PATH="$PATH:/app/.venv/bin" .venv/bin/python -m prisma generate --schema=./schema.prisma || true
+
+# ── Stage 2: Runtime ──
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libffi8 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the entire built app from builder
+COPY --from=builder /app /app
+COPY --from=builder /root/.cache /root/.cache
+
+# Make venv binaries available
+ENV PATH="/app/.venv/bin:${PATH}" \
+    FASTEMBED_CACHE_PATH=/app/.fastembed_cache \
+    HF_HOME=/app/.fastembed_cache/hf \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 4000/tcp
+
+# Entrypoint: litellm CLI with config
+# Override config by mounting a different file to /app/config.local.yaml
+ENTRYPOINT ["litellm", "--config", "/app/config.local.yaml", "--port", "4000"]

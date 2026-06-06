@@ -1,19 +1,23 @@
+# ── LiteLLM Enterprise Fork ── Docker Config ──
+# For docker-compose.enterprise.yml — uses Docker service hostnames.
+#
+# Services:
+#   - db: PostgreSQL on port 5432 (internal)
+#   - qdrant: Qdrant on port 6333 (internal)
+#   - litellm: Proxy on port 4000
+
 model_list:
+  # Chat model via OpenRouter
   - model_name: gpt-4o
     litellm_params:
       model: openrouter/openai/gpt-4o
       api_key: os.environ/OPENROUTER_API_KEY
 
   # In-process dense embeddings via fastembed (BGE-small, 384-dim)
+  # Pre-baked into Docker image — no external service needed
   - model_name: bge-small
     litellm_params:
       model: fastembed/BAAI/bge-small-en-v1.5
-
-  # Local chat model (via Ollama - uncomment if llama3 is pulled)
-  # - model_name: llama3
-  #   litellm_params:
-  #     model: ollama/llama3
-  #     api_base: http://localhost:11434
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
@@ -26,7 +30,7 @@ general_settings:
     vectordb:
       backends:
         qdrant:
-          api_base: "http://localhost:6333"
+          api_base: "http://qdrant:6333"
           api_key: ""
           distance: "Cosine"
           default_vector_size: 384
@@ -34,14 +38,18 @@ general_settings:
       routing:
         default_backend: "qdrant"
 
-# Register Qdrant as a vector store accessible via LiteLLM proxy
+# Vector store registry — Qdrant accessible via LiteLLM proxy
 vector_store_registry:
   - vector_store_name: "countries"
     litellm_params:
       vector_store_id: "countries"
       custom_llm_provider: "qdrant"
-      api_base: "http://localhost:6333"
+      api_base: "http://qdrant:6333"
       litellm_embedding_model: "bge-small"
       qdrant_distance: "Cosine"
       qdrant_vector_size: 384
       qdrant_text_field: "text"
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
