@@ -6,6 +6,7 @@
 # This starts:
 #   - LiteLLM proxy (port 4000) with enterprise_open modules
 #     + Qdrant semantic caching for LLM cost savings
+#     + Langfuse observability for all LLM calls
 #   - PostgreSQL (port 5434) for DB features (UI, keys, audit)
 #   - Qdrant (port 6333) for vector store + semantic cache
 #
@@ -19,6 +20,11 @@
 #   - Exact prompt match → free cache hit (zero API call)
 #   - Similar prompt (≥0.8 cosine) → semantic cache hit (zero API call)
 #   - Cache TTL: 7 days (configurable in config.docker.yaml)
+#
+# Observability:
+#   - All LLM calls logged to Langfuse (traces, tokens, cost, latency)
+#   - Set LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY in .env
+#   - Dashboard at https://cloud.langfuse.com (or your self-hosted URL)
 
 services:
   litellm:
@@ -38,6 +44,11 @@ services:
       UI_PASSWORD: "${UI_PASSWORD:-admin}"
       STORE_MODEL_IN_DB: "True"
       QDRANT_VECTOR_SIZE: "384"
+      # Langfuse observability
+      LANGFUSE_PUBLIC_KEY: "${LANGFUSE_PUBLIC_KEY:-}"
+      LANGFUSE_SECRET_KEY: "${LANGFUSE_SECRET_KEY:-}"
+      LANGFUSE_HOST: "${LANGFUSE_HOST:-https://cloud.langfuse.com}"
+      LANGFUSE_RELEASE: "${LANGFUSE_RELEASE:-litellm-enterprise}"
     volumes:
       # Mount config for easy editing without rebuild
       - ./config.docker.yaml:/app/config.local.yaml:ro
@@ -91,3 +102,45 @@ services:
 volumes:
   litellm_enterprise_pgdata:
   litellm_enterprise_qdrant:
+
+  # ── Self-Hosted Langfuse (uncomment to enable) ──────────────
+  # Provides full observability dashboard at http://localhost:3001
+  # When enabled, set in .env:
+  #   LANGFUSE_PUBLIC_KEY=""  (auto-generated on first start)
+  #   LANGFUSE_SECRET_KEY=""  (auto-generated on first start)
+  #   LANGFUSE_HOST="http://langfuse:3000"
+  #
+  # langfuse:
+  #   image: langfuse/langfuse:latest
+  #   container_name: litellm-enterprise-langfuse
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3001:3000"
+  #   environment:
+  #     DATABASE_URL: "postgresql://langfuse:langfuse123@langfuse-db:5432/langfuse"
+  #     NEXTAUTH_SECRET: "mysecret-change-me-in-production"
+  #     SALT: "salt-change-me-in-production"
+  #     TELEMETRY_ENABLED: "false"
+  #     NEXT_PUBLIC_SIGN_UP_DISABLED: "false"
+  #   depends_on:
+  #     langfuse-db:
+  #       condition: service_healthy
+  #
+  # langfuse-db:
+  #   image: postgres:16-alpine
+  #   container_name: litellm-enterprise-langfuse-db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_DB: langfuse
+  #     POSTGRES_USER: langfuse
+  #     POSTGRES_PASSWORD: langfuse123
+  #   volumes:
+  #     - litellm_enterprise_langfuse_pgdata:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -d langfuse -U langfuse"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+  #
+  # volumes:
+  #   litellm_enterprise_langfuse_pgdata:

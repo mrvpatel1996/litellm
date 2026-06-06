@@ -38,12 +38,7 @@ general_settings:
       routing:
         default_backend: "qdrant"
 
-# ─── LLM Response Caching ───────────────────────────────────
-# Strategy: Qdrant semantic cache for cost savings
-# - Exact prompts → instant cache hit (free!)
-# - Similar prompts (≥0.8 similarity) → semantic cache hit (free!)
-# - TTL: 7 days for cached responses
-# - Caches: chat completions + embeddings
+# ─── LLM Response Caching (Cost Savings) ────────────────────
 litellm_settings:
   cache: true
   cache_params:
@@ -53,12 +48,17 @@ litellm_settings:
     qdrant_semantic_cache_embedding_model: "bge-small"
     qdrant_semantic_cache_vector_size: 384
     similarity_threshold: 0.8
-    ttl: 604800  # 7 days in seconds
+    ttl: 604800  # 7 days
     supported_call_types:
       - "completion"
       - "acompletion"
       - "embedding"
       - "aembedding"
+
+  # ─── Langfuse Observability ────────────────────────────────
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+
   drop_params: true
   set_verbose: false
 
