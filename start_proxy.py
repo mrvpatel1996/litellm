@@ -18,6 +18,11 @@ if env_file.exists():
                 k, v = line.split("=", 1)
                 os.environ[k] = v
 
+# Ensure vector size matches our bge-small model (384-dim)
+# This is used by QdrantSemanticCache if qdrant_semantic_cache_vector_size
+# is not explicitly passed (fallback default is 1536 for OpenAI ada).
+os.environ.setdefault("QDRANT_VECTOR_SIZE", "384")
+
 os.chdir(str(LITELLM_DIR))
 sys.argv = ["litellm", "--config", "config.local.yaml", "--port", "4000"]
 

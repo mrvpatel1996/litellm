@@ -5,14 +5,20 @@
 #
 # This starts:
 #   - LiteLLM proxy (port 4000) with enterprise_open modules
+#     + Qdrant semantic caching for LLM cost savings
 #   - PostgreSQL (port 5434) for DB features (UI, keys, audit)
-#   - Qdrant (port 6333) for vector store
+#   - Qdrant (port 6333) for vector store + semantic cache
 #
 # First run:
 #   1. Copy .env.example to .env and fill in your keys
 #   2. docker compose -f docker-compose.enterprise.yml up -d
 #   3. Wait ~30s for all services to be healthy
 #   4. Access UI at http://localhost:4000/ui
+#
+# Cost savings:
+#   - Exact prompt match → free cache hit (zero API call)
+#   - Similar prompt (≥0.8 cosine) → semantic cache hit (zero API call)
+#   - Cache TTL: 7 days (configurable in config.docker.yaml)
 
 services:
   litellm:
@@ -25,12 +31,13 @@ services:
     ports:
       - "4000:4000"
     environment:
-      DATABASE_URL: "postgresql://litellm:litellm123@db:5432/litellm"
+      DATABASE_URL: "postgresql://litellm:***@db:5432/litellm"
       LITELLM_MASTER_KEY: "${LITELLM_MASTER_KEY:-sk-1234}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
       UI_USERNAME: "${UI_USERNAME:-admin}"
       UI_PASSWORD: "${UI_PASSWORD:-admin}"
       STORE_MODEL_IN_DB: "True"
+      QDRANT_VECTOR_SIZE: "384"
     volumes:
       # Mount config for easy editing without rebuild
       - ./config.docker.yaml:/app/config.local.yaml:ro
