@@ -1,0 +1,75 @@
+# ── LiteLLM Enterprise Fork ── Docker Config ──
+# For docker-compose.enterprise.yml — uses Docker service hostnames.
+#
+# Services:
+#   - db: PostgreSQL on port 5432 (internal)
+#   - qdrant: Qdrant on port 6333 (internal)
+#   - litellm: Proxy on port 4000
+
+model_list:
+  # Chat model via OpenRouter
+  - model_name: gpt-4o
+    litellm_params:
+      model: openrouter/openai/gpt-4o
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # In-process dense embeddings via fastembed (BGE-small, 384-dim)
+  # Pre-baked into Docker image — no external service needed
+  - model_name: bge-small
+    litellm_params:
+      model: fastembed/BAAI/bge-small-en-v1.5
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  ui_access_mode: admin
+  admin_username: os.environ/UI_USERNAME
+  admin_password: os.environ/UI_PASSWORD
+  enterprise_settings:
+    enabled: true
+    vectordb:
+      backends:
+        qdrant:
+          api_base: "http://qdrant:6333"
+          api_key: ""
+          distance: "Cosine"
+          default_vector_size: 384
+          text_field: "text"
+      routing:
+        default_backend: "qdrant"
+
+# ─── LLM Response Caching (Cost Savings) ────────────────────
+litellm_settings:
+  cache: true
+  cache_params:
+    type: "qdrant-semantic"
+    qdrant_api_base: "http://qdrant:6333"
+    qdrant_collection_name: "litellm_cache"
+    qdrant_semantic_cache_embedding_model: "bge-small"
+    qdrant_semantic_cache_vector_size: 384
+    similarity_threshold: 0.8
+    ttl: 604800  # 7 days
+    supported_call_types:
+      - "completion"
+      - "acompletion"
+      - "embedding"
+      - "aembedding"
+
+  # ─── Langfuse Observability ────────────────────────────────
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
+
+  drop_params: true
+  set_verbose: false
+
+# Vector store registry — Qdrant accessible via LiteLLM proxy
+vector_store_registry:
+  - vector_store_name: "countries"
+    litellm_params:
+      vector_store_id: "countries"
+      custom_llm_provider: "qdrant"
+      api_base: "http://qdrant:6333"
+      litellm_embedding_model: "bge-small"
+      qdrant_distance: "Cosine"
+      qdrant_vector_size: 384
+      qdrant_text_field: "text"

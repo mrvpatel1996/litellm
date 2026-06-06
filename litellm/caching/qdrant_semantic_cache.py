@@ -496,3 +496,23 @@ class QdrantSemanticCache(BaseCache):
         for val in cache_list:
             tasks.append(self.async_set_cache(val[0], val[1], **kwargs))
         await asyncio.gather(*tasks)
+
+    async def disconnect(self):
+        """Gracefully close the Qdrant client connection."""
+        try:
+            if hasattr(self, "qdrant_client") and self.qdrant_client is not None:
+                self.qdrant_client.close()
+        except Exception:
+            pass
+
+    async def test_connection(self) -> dict:
+        """Test the Qdrant connection."""
+        try:
+            info = self.qdrant_client.get_collection(self.collection_name)
+            return {
+                "status": "success",
+                "message": f"Connected to Qdrant collection '{self.collection_name}' ({info.points_count} points)",
+                "error": None,
+            }
+        except Exception as e:
+            return {"status": "failed", "message": str(e), "error": str(e)}
