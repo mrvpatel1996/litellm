@@ -60,6 +60,7 @@ FROM python:3.12-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libffi8 \
+    libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -67,6 +68,10 @@ WORKDIR /app
 # Copy the entire built app from builder
 COPY --from=builder /app /app
 COPY --from=builder /root/.cache /root/.cache
+
+# Copy entrypoint script
+COPY docker/entrypoint.enterprise.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Make venv binaries available
 ENV PATH="/app/.venv/bin:${PATH}" \
@@ -78,4 +83,4 @@ EXPOSE 4000/tcp
 
 # Entrypoint: litellm CLI with config
 # Override config by mounting a different file to /app/config.local.yaml
-ENTRYPOINT ["litellm", "--config", "/app/config.local.yaml", "--port", "4000"]
+ENTRYPOINT ["/app/entrypoint.sh"]

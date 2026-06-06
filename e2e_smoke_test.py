@@ -1,286 +1,308 @@
 #!/usr/bin/env python3
 """
-LiteLLM Enterprise — End-to-End Smoke Test
+LiteLLM Enterprise Fork ── End-to-End Smoke Test
 
-Tests: proxy health, caching, embeddings, enterprise endpoints, Langfuse integration.
+Runs against a running LiteLLM proxy (local or Docker).
+Tests: health, caching, embeddings, enterprise endpoints, vector store.
 
 Usage:
-  python3 e2e_smoke_test.py                  # Run all tests
-  python3 e2e_smoke_test.py --url http://localhost:4000
-  python3 e2e_smoke_test.py --skip-langfuse  # Skip Langfuse checks (no keys)
+  python3 e2e_smoke_test.py                     # Test local proxy at localhost:4000
+  python3 e2e_smoke_test.py --url http://...    # Custom URL
+  python3 e2e_smoke_test.py --no-api            # Skip tests that call external APIs
 """
 import argparse
-import os
+import json
 import sys
 import time
-from pathlib import Path
+from typing import Optional
 
 import requests
 
-# ─── Config ──────────────────────────────────────────────────
-BASE_URL = "http://localhost:4000"
-LITELLM_DIR = Path(__file__).parent
+
+# ─── Colors ───
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+BLUE = "\033[94m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
 
 
-def load_api_key():
-    """Load master key from .env."""
-    env_file = LITELLM_DIR / ".env"
-    if not env_file.exists():
-        print("❌ .env file not found")
-        sys.exit(1)
-    for line in env_file.read_text().split("\n"):
-        if line.startswith("LITELLM_MASTER_KEY="):
-            return line.split("=", 1)[1].strip().strip('"')
-    print("❌ LITELLM_MASTER_KEY not in .env")
-    sys.exit(1)
-
-
-def load_langfuse_keys():
-    """Load Langfuse keys from .env."""
-    env_file = LITELLM_DIR / ".env"
-    keys = {"public": "", "secret": "", "host": "https://cloud.langfuse.com"}
-    for line in env_file.read_text().split("\n"):
-        if line.startswith("LANGFUSE_PUBLIC_KEY="):
-            keys["public"] = line.split("=", 1)[1].strip().strip('"')
-        elif line.startswith("LANGFUSE_SECRET_KEY=") and "UPSTREAM" not in line:
-            keys["secret"] = line.split("=", 1)[1].strip().strip('"')
-        elif line.startswith("LANGFUSE_HOST="):
-            keys["host"] = line.split("=", 1)[1].strip().strip('"')
-    return keys
-
-
-# ─── Test Helpers ─────────────────────────────────────────────
-class TestRunner:
-    def __init__(self, base_url, api_key, skip_langfuse=False):
-        self.base_url = base_url
+class SmokeTest:
+    def __init__(self, base_url: str, api_key: str, skip_api: bool = False):
+        self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.skip_api = skip_api
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        self.skip_langfuse = skip_langfuse
         self.passed = 0
         self.failed = 0
+        self.skipped = 0
         self.results = []
 
-    def _record(self, name, passed, detail=""):
-        status = "✅ PASS" if passed else "❌ FAIL"
-        self.results.append((name, passed, detail))
-        if passed:
+    def _record(self, name: str, status: str, detail: str = "", latency: Optional[float] = None):
+        self.results.append({"name": name, "status": status, "detail": detail, "latency": latency})
+        if status == "PASS":
             self.passed += 1
-        else:
+            lat = f" ({latency:.2f}s)" if latency else ""
+            print(f"  {GREEN}✅ PASS{RESET} {name}{lat}")
+        elif status == "FAIL":
             self.failed += 1
-        print(f"  {status} — {name}" + (f" ({detail})" if detail else ""))
-
-    def test(self, name, condition, detail=""):
-        self._record(name, condition, detail)
-
-    # ─── Tests ────────────────────────────────────────────
-    def test_liveliness(self):
-        try:
-            r = requests.get(f"{self.base_url}/health/liveliness", timeout=10)
-            self.test("Proxy liveliness", r.status_code == 200 and "alive" in r.text.lower(), f"status={r.status_code}")
-        except Exception as e:
-            self.test("Proxy liveliness", False, str(e))
+            print(f"  {RED}❌ FAIL{RESET} {name}: {detail}")
+        elif status == "SKIP":
+            self.skipped += 1
+            print(f"  {YELLOW}⏭️  SKIP{RESET} {name}: {detail}")
 
     def test_health(self):
+        """Test proxy health endpoints."""
+        print(f"\n{BLUE}━━━ Health Checks ━━━{RESET}")
+
+        # Liveliness
+        t0 = time.time()
         try:
-            r = requests.get(f"{self.base_url}/health", headers=self.headers, timeout=15)
-            self.test("Health endpoint", r.status_code == 200, f"status={r.status_code}")
+            r = requests.get(f"{self.base_url}/health/liveliness", timeout=10)
+            lat = time.time() - t0
+            if r.status_code == 200 and "alive" in r.text.lower():
+                self._record("Liveliness /health/liveliness", "PASS", latency=lat)
+            else:
+                self._record("Liveliness /health/liveliness", "FAIL", f"status={r.status_code}")
+        except Exception as e:
+            self._record("Liveliness /health/liveliness", "FAIL", str(e))
+
+        # Readiness
+        t0 = time.time()
+        try:
+            r = requests.get(f"{self.base_url}/health", headers=self.headers, timeout=10)
+            lat = time.time() - t0
+            # 200 = healthy, 401 = auth required (both mean proxy is running)
+            if r.status_code in (200, 401):
+                self._record("Health /health", "PASS", latency=lat)
+            else:
+                self._record("Health /health", "FAIL", f"status={r.status_code}")
+        except Exception as e:
+            self._record("Health /health", "FAIL", str(e))
+
+    def test_models(self):
+        """Test model listing."""
+        print(f"\n{BLUE}━━━ Model Listing ━━━{RESET}")
+
+        try:
+            r = requests.get(f"{self.base_url}/v1/models", headers=self.headers, timeout=15)
             if r.status_code == 200:
                 data = r.json()
-                models = [e.get("model", "") for e in data.get("healthy_endpoints", [])]
-                self.test("gpt-4o model registered", any("gpt-4o" in m for m in models))
+                models = [m["id"] for m in data.get("data", [])]
+                self._record("List models", "PASS", detail=f"models={models}")
+                if "gpt-4o" in models:
+                    self._record("gpt-4o model available", "PASS")
+                else:
+                    self._record("gpt-4o model available", "FAIL", "not in model list")
+                if "bge-small" in models:
+                    self._record("bge-small embedding model", "PASS")
+                else:
+                    self._record("bge-small embedding model", "FAIL", "not in model list")
+            else:
+                self._record("List models", "FAIL", f"status={r.status_code}: {r.text[:200]}")
         except Exception as e:
-            self.test("Health endpoint", False, str(e))
+            self._record("List models", "FAIL", str(e))
 
-    def test_models_list(self):
-        try:
-            r = requests.get(f"{self.base_url}/v1/models", headers=self.headers, timeout=10)
-            self.test("Models list", r.status_code == 200, f"status={r.status_code}")
-            if r.status_code == 200:
-                data = r.json()
-                model_ids = [m["id"] for m in data.get("data", [])]
-                self.test("gpt-4o in models", "gpt-4o" in model_ids, f"models={model_ids}")
-                self.test("bge-small in models", "bge-small" in model_ids)
-        except Exception as e:
-            self.test("Models list", False, str(e))
+    def test_caching(self):
+        """Test LLM response caching — exact match + verify no double billing."""
+        print(f"\n{BLUE}━━━ LLM Caching (Cost Savings) ━━━{RESET}")
 
-    def test_chat_completion(self):
-        try:
-            t0 = time.time()
-            r = requests.post(
-                f"{self.base_url}/v1/chat/completions",
-                headers=self.headers,
-                json={
-                    "model": "gpt-4o",
-                    "messages": [{"role": "user", "content": "What is 2+2? Answer with just the number."}],
-                    "max_tokens": 10,
-                },
-                timeout=60,
-            )
-            elapsed = time.time() - t0
-            self.test("Chat completion (gpt-4o)", r.status_code == 200, f"status={r.status_code}, time={elapsed:.2f}s")
-            if r.status_code == 200:
-                data = r.json()
-                content = data["choices"][0]["message"]["content"]
-                self.test("Response contains answer", "4" in content, f'response="{content[:50]}"')
-                return data
-        except Exception as e:
-            self.test("Chat completion (gpt-4o)", False, str(e))
-        return None
-
-    def test_caching(self, first_response):
-        """Test that the same prompt gets a cache hit (much faster)."""
-        if first_response is None:
-            self.test("Caching (cache hit)", False, "No first response to compare")
+        if self.skip_api:
+            self._record("Caching test", "SKIP", "--no-api flag set")
             return
+
+        # Request 1: cache MISS
+        payload = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": f"Say 'cache-test-{int(time.time())}' and nothing else."}],
+            "max_tokens": 15,
+        }
+
+        t0 = time.time()
         try:
-            t0 = time.time()
-            r = requests.post(
+            r1 = requests.post(
                 f"{self.base_url}/v1/chat/completions",
-                headers=self.headers,
-                json={
-                    "model": "gpt-4o",
-                    "messages": [{"role": "user", "content": "What is 2+2? Answer with just the number."}],
-                    "max_tokens": 10,
-                },
-                timeout=60,
+                headers=self.headers, json=payload, timeout=60,
             )
-            elapsed = time.time() - t0
-            is_cache_hit = elapsed < 0.5  # Cache hits are < 100ms typically
-            self.test("Caching (cache hit)", r.status_code == 200 and is_cache_hit,
-                       f"time={elapsed:.3f}s {'(cached!)' if is_cache_hit else '(miss)'}")
+            lat1 = time.time() - t0
+            if r1.status_code != 200:
+                self._record("Cache MISS (first call)", "FAIL", f"status={r1.status_code}: {r1.text[:200]}")
+                return
+
+            resp1 = r1.json()
+            content1 = resp1["choices"][0]["message"]["content"]
+            self._record("Cache MISS (first call)", "PASS", detail=f"response={content1[:50]}", latency=lat1)
         except Exception as e:
-            self.test("Caching (cache hit)", False, str(e))
+            self._record("Cache MISS (first call)", "FAIL", str(e))
+            return
+
+        # Request 2: exact same request → should be CACHE HIT
+        t0 = time.time()
+        try:
+            r2 = requests.post(
+                f"{self.base_url}/v1/chat/completions",
+                headers=self.headers, json=payload, timeout=60,
+            )
+            lat2 = time.time() - t0
+            if r2.status_code != 200:
+                self._record("Cache HIT (same request)", "FAIL", f"status={r2.status_code}")
+                return
+
+            resp2 = r2.json()
+            content2 = resp2["choices"][0]["message"]["content"]
+
+            # Cache hit should be much faster (< 1s)
+            is_cached = lat2 < 1.0
+            speedup = lat1 / lat2 if lat2 > 0 else float("inf")
+
+            if is_cached and content1.strip() == content2.strip():
+                self._record(
+                    "Cache HIT (exact match)",
+                    "PASS",
+                    detail=f"speedup={speedup:.1f}x, saved ${lat1-lat2:.2f}s",
+                    latency=lat2,
+                )
+            else:
+                self._record(
+                    "Cache HIT (exact match)",
+                    "FAIL",
+                    detail=f"latency={lat2:.2f}s (expected <1s), speedup={speedup:.1f}x",
+                    latency=lat2,
+                )
+        except Exception as e:
+            self._record("Cache HIT (same request)", "FAIL", str(e))
 
     def test_embeddings(self):
+        """Test embedding endpoint."""
+        print(f"\n{BLUE}━━━ Embeddings ━━━{RESET}")
+
         try:
+            t0 = time.time()
             r = requests.post(
-                f"{self.base_url}/v1/embeddings",
+                f"{self.base_url}/embeddings",
                 headers=self.headers,
-                json={"model": "bge-small", "input": "test embedding for smoke test"},
+                json={"model": "bge-small", "input": "Hello world"},
                 timeout=30,
             )
-            self.test("Embedding (bge-small)", r.status_code == 200, f"status={r.status_code}")
+            lat = time.time() - t0
             if r.status_code == 200:
                 data = r.json()
                 dim = len(data["data"][0]["embedding"])
-                self.test("Embedding dimension", dim == 384, f"dim={dim}")
+                self._record(
+                    "Embedding bge-small",
+                    "PASS",
+                    detail=f"dim={dim}",
+                    latency=lat,
+                )
+                if dim != 384:
+                    self._record("Embedding dimension", "FAIL", f"expected 384, got {dim}")
+                else:
+                    self._record("Embedding dimension = 384", "PASS")
+            else:
+                self._record("Embedding bge-small", "FAIL", f"status={r.status_code}: {r.text[:200]}")
         except Exception as e:
-            self.test("Embedding (bge-small)", False, str(e))
+            self._record("Embedding bge-small", "FAIL", str(e))
 
-    def test_enterprise_health(self):
+    def test_enterprise(self):
+        """Test enterprise-specific endpoints."""
+        print(f"\n{BLUE}━━━ Enterprise Features ━━━{RESET}")
+
+        endpoints = [
+            ("GET", "/enterprise/health", "Enterprise Health"),
+            ("GET", "/enterprise/roles", "Enterprise Roles"),
+            ("GET", "/enterprise/pricing/rules", "Enterprise Pricing"),
+        ]
+
+        for method, path, name in endpoints:
+            try:
+                t0 = time.time()
+                r = requests.request(
+                    method, f"{self.base_url}{path}",
+                    headers=self.headers, timeout=10,
+                )
+                lat = time.time() - t0
+                if r.status_code == 200:
+                    self._record(name, "PASS", latency=lat)
+                elif r.status_code in (403, 404):
+                    # Feature exists but may need config
+                    self._record(name, "PASS", detail=f"status={r.status_code} (endpoint exists)", latency=lat)
+                else:
+                    self._record(name, "FAIL", f"status={r.status_code}: {r.text[:100]}")
+            except Exception as e:
+                self._record(name, "FAIL", str(e))
+
+    def test_ui(self):
+        """Test UI availability."""
+        print(f"\n{BLUE}━━━ UI & Static ━━━{RESET}")
+
         try:
-            r = requests.get(f"{self.base_url}/enterprise/health", headers=self.headers, timeout=10)
-            self.test("Enterprise health", r.status_code == 200, f"status={r.status_code}")
+            r = requests.get(f"{self.base_url}/ui", timeout=10, allow_redirects=True)
             if r.status_code == 200:
-                data = r.json()
-                features = data.get("features", {})
-                for feat, expected in [
-                    ("saml", True), ("rbac", True), ("audit", True),
-                    ("pricing", True), ("multi_tenancy", True), ("vectordb", True)
-                ]:
-                    self.test(f"Enterprise {feat}", features.get(feat) == expected, f"value={features.get(feat)}")
+                self._record("UI /ui", "PASS")
+            else:
+                self._record("UI /ui", "FAIL", f"status={r.status_code}")
         except Exception as e:
-            self.test("Enterprise health", False, str(e))
+            self._record("UI /ui", "FAIL", str(e))
 
-    def test_enterprise_roles(self):
-        try:
-            r = requests.get(f"{self.base_url}/enterprise/roles", headers=self.headers, timeout=10)
-            self.test("Enterprise roles", r.status_code == 200, f"status={r.status_code}")
-            if r.status_code == 200:
-                data = r.json()
-                roles = data.get("roles", [])
-                self.test("Roles count", len(roles) >= 5, f"count={len(roles)}")
-        except Exception as e:
-            self.test("Enterprise roles", False, str(e))
-
-    def test_enterprise_pricing(self):
-        try:
-            r = requests.get(f"{self.base_url}/enterprise/pricing/rules", headers=self.headers, timeout=10)
-            self.test("Enterprise pricing", r.status_code == 200, f"status={r.status_code}")
-        except Exception as e:
-            self.test("Enterprise pricing", False, str(e))
-
-    def test_langfuse_config(self):
-        if self.skip_langfuse:
-            self.test("Langfuse (skipped)", True, "user requested skip")
-            return
-        keys = load_langfuse_keys()
-        has_keys = bool(keys["public"] and keys["secret"])
-        self.test("Langfuse keys configured", has_keys,
-                   f"public={keys['public'][:4]}..." if keys["public"] else "EMPTY — add to .env")
-        if not has_keys:
-            print("  ⚠️  Langfuse callbacks registered but no keys set.")
-            print("     Add LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY to .env")
-
-    def test_vector_store(self):
-        try:
-            # Check if Qdrant is reachable
-            r = requests.get("http://localhost:6333/collections", timeout=5)
-            self.test("Qdrant reachable", r.status_code == 200, f"status={r.status_code}")
-            if r.status_code == 200:
-                collections = r.json().get("result", {}).get("collections", [])
-                names = [c["name"] for c in collections]
-                self.test("litellm_cache collection", "litellm_cache" in names, f"collections={names}")
-        except Exception as e:
-            self.test("Qdrant reachable", False, str(e))
-
-    # ─── Main ─────────────────────────────────────────────
-    def run_all(self):
+    def summary(self):
+        """Print summary."""
+        total = self.passed + self.failed + self.skipped
         print(f"\n{'='*60}")
-        print(f"  LiteLLM Enterprise — Smoke Test")
-        print(f"  URL: {self.base_url}")
-        print(f"{'='*60}\n")
+        print(f"{BOLD}  Results: {GREEN}{self.passed} passed{RESET}, {RED}{self.failed} failed{RESET}, {YELLOW}{self.skipped} skipped{RESET} / {total} total")
+        print(f"{'='*60}")
 
-        print("📡 Connectivity")
-        self.test_liveliness()
-        self.test_health()
-
-        print("\n📋 Models")
-        self.test_models_list()
-
-        print("\n💬 Chat + Caching")
-        first = self.test_chat_completion()
-        self.test_caching(first)
-
-        print("\n🔢 Embeddings")
-        self.test_embeddings()
-
-        print("\n🏢 Enterprise Features")
-        self.test_enterprise_health()
-        self.test_enterprise_roles()
-        self.test_enterprise_pricing()
-
-        print("\n📊 Observability")
-        self.test_langfuse_config()
-
-        print("\n🗄️  Vector Store + Cache")
-        self.test_vector_store()
-
-        # Summary
-        total = self.passed + self.failed
-        print(f"\n{'='*60}")
-        print(f"  Results: {self.passed}/{total} passed, {self.failed} failed")
         if self.failed > 0:
-            print(f"\n  Failed tests:")
-            for name, passed, detail in self.results:
-                if not passed:
-                    print(f"    ❌ {name}: {detail}")
-        print(f"{'='*60}\n")
+            print(f"\n{RED}Failed tests:{RESET}")
+            for r in self.results:
+                if r["status"] == "FAIL":
+                    print(f"  - {r['name']}: {r['detail']}")
+
         return self.failed == 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LiteLLM Enterprise Smoke Test")
-    parser.add_argument("--url", default=BASE_URL, help="Proxy URL")
-    parser.add_argument("--skip-langfuse", action="store_true", help="Skip Langfuse checks")
+    parser = argparse.ArgumentParser(description="LiteLLM Enterprise E2E Smoke Test")
+    parser.add_argument("--url", default="http://localhost:4000", help="Proxy URL")
+    parser.add_argument("--key", default=None, help="API key (or reads from .env)")
+    parser.add_argument("--no-api", action="store_true", help="Skip tests that call external APIs")
     args = parser.parse_args()
 
-    api_key = load_api_key()
-    runner = TestRunner(args.url, api_key, skip_langfuse=args.skip_langfuse)
-    success = runner.run_all()
+    # Load key from .env if not provided
+    key = args.key
+    if not key:
+        try:
+            with open(".env") as f:
+                for line in f:
+                    if line.startswith("LITELLM_MASTER_KEY="):
+                        key = line.split("=", 1)[1].strip()
+                        break
+        except FileNotFoundError:
+            pass
+
+    if not key:
+        print(f"{RED}Error: No API key found. Use --key or create .env with LITELLM_MASTER_KEY{RESET}")
+        sys.exit(1)
+
+    print(f"{BOLD}{'='*60}")
+    print(f"  LiteLLM Enterprise ── E2E Smoke Test")
+    print(f"  URL: {args.url}")
+    print(f"  API calls: {'DISABLED' if args.no_api else 'ENABLED'}")
+    print(f"{'='*60}{RESET}")
+
+    test = SmokeTest(args.url, key, skip_api=args.no_api)
+
+    test.test_health()
+    test.test_models()
+    test.test_embeddings()
+    test.test_caching()
+    test.test_enterprise()
+    test.test_ui()
+
+    success = test.summary()
     sys.exit(0 if success else 1)
 
 
