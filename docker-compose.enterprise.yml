@@ -1,26 +1,24 @@
-# ── LiteLLM Enterprise Fork ── Full Stack Docker Compose ──
+# LiteLLM Enterprise + Self-Hosted Langfuse - Full Stack
 #
-# Usage:
-#   docker compose -f docker-compose.enterprise.yml up -d
-#
-# This starts:
-#   - LiteLLM proxy (port 4000) with enterprise_open modules
-#     + Qdrant semantic caching for LLM cost savings
-#   - PostgreSQL (port 5435) for DB features (UI, keys, audit)
-#   - Qdrant (port 6335) for vector store + semantic cache
+# Services:
+#   LiteLLM (4000), Langfuse UI (3001), Qdrant (6335),
+#   ClickHouse, Redis, MinIO (9090), 2x PostgreSQL
 #
 # First run:
-#   1. Copy .env.example to .env and fill in your keys
-#   2. docker compose -f docker-compose.enterprise.yml up -d
-#   3. Wait ~30s for all services to be healthy
-#   4. Access UI at http://localhost:4000/ui
-#
-# Cost savings:
-#   - Exact prompt match → free cache hit (zero API call)
-#   - Similar prompt (≥0.8 cosine) → semantic cache hit (zero API call)
-#   - Cache TTL: 7 days (configurable in config.docker.yaml)
+#   1. docker compose -f docker-compose.enterprise.yml up -d
+#   2. Wait ~90s for all services to initialize
+#   3. Open http://localhost:3001 to create your Langfuse account
+#   4. Get API keys: Langfuse UI -> Settings -> API Keys
+#   5. Add keys to .env:
+#      LANGFUSE_PUBLIC_KEY="pk-..."
+#      LANGFUSE_SECRET_KEY=***   6. docker compose -f docker-compose.enterprise.yml restart litellm
+#   7. Access LiteLLM UI at http://localhost:4000/ui
 
 services:
+
+  # =============================================
+  #  LiteLLM Enterprise Proxy
+  # =============================================
   litellm:
     build:
       context: .
@@ -38,8 +36,13 @@ services:
       UI_PASSWORD: "${UI_PASSWORD:-admin}"
       STORE_MODEL_IN_DB: "True"
       QDRANT_VECTOR_SIZE: "384"
+      LANGFUSE_PUBLIC_KEY: "pk-lf-f1103b7b-3e1a-4f6a-a800-abaf6c7a7691"
+      LANGFUSE_SECRET_KEY: "sk-lf-...d6a4"
+      LANGFUSE_HOST: "http://langfuse-web:3000"
+      LANGFUSE_RELEASE: "litellm-enterprise"
+      ROOT_REDIRECT_URL: "/ui"
+      DOCS_URL: "/docs"
     volumes:
-      # Mount config for easy editing without rebuild
       - ./config.docker.yaml:/app/config.local.yaml:ro
     depends_on:
       db:
@@ -55,6 +58,9 @@ services:
       retries: 5
       start_period: 40s
 
+  # =============================================
+  #  PostgreSQL for LiteLLM
+  # =============================================
   db:
     image: postgres:16-alpine
     container_name: litellm-enterprise-db
@@ -62,7 +68,7 @@ services:
     environment:
       POSTGRES_DB: litellm
       POSTGRES_USER: litellm
-      POSTGRES_PASSWORD: litellm123
+      POSTGRES_PASSWORD: "litellm123"
     ports:
       - "5435:5432"
     volumes:
@@ -73,6 +79,9 @@ services:
       timeout: 5s
       retries: 10
 
+  # =============================================
+  #  Qdrant - Vector Store + Semantic Cache
+  # =============================================
   qdrant:
     image: qdrant/qdrant:latest
     container_name: litellm-enterprise-qdrant
@@ -83,11 +92,165 @@ services:
     volumes:
       - litellm_enterprise_qdrant:/qdrant/storage
     healthcheck:
-      test: ["CMD", "/bin/sh", "-c", "cat /proc/self/status | head -1"]
+      test: ["CMD-SHELL", "cat /proc/self/status | head -1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # =============================================
+  #  Langfuse Web (UI + API)
+  # =============================================
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: litellm-enterprise-langfuse
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment: &langfuse-env
+      NEXTAUTH_URL: "http://localhost:3001"
+      NEXTAUTH_SECRET: "mysecret-change-me"
+      DATABASE_URL: "postgresql://langfuse:langfuse123@langfuse-db:5432/langfuse"
+      SALT: "mysalt-change-me"
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      CLICKHOUSE_MIGRATION_URL: "clickhouse://clickhouse:9000"
+      CLICKHOUSE_USER: "clickhouse"
+      CLICKHOUSE_PASSWORD: "clickhouse"
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_AUTH: "myredissecret"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "langfuse"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: "auto"
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: "minio"
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "miniosecret"
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://minio:9000"
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "events/"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: "langfuse"
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: "auto"
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: "minio"
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "miniosecret"
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: "http://localhost:9090"
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "media/"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://$(cat /etc/hostname):3000/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # =============================================
+  #  Langfuse Worker (async event processing)
+  # =============================================
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: litellm-enterprise-langfuse-worker
+    restart: unless-stopped
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment: *langfuse-env
+
+  # =============================================
+  #  ClickHouse (OLAP for Langfuse analytics)
+  # =============================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: litellm-enterprise-clickhouse
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: "clickhouse"
+    volumes:
+      - litellm_enterprise_clickhouse:/var/lib/clickhouse
+      - litellm_enterprise_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # =============================================
+  #  Redis (cache + queue for Langfuse)
+  # =============================================
+  redis:
+    image: redis:7-alpine
+    container_name: litellm-enterprise-redis
+    restart: unless-stopped
+    command: redis-server --requirepass myredissecret
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # =============================================
+  #  MinIO (S3-compatible storage for Langfuse)
+  # =============================================
+  minio:
+    image: minio/minio:latest
+    container_name: litellm-enterprise-minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: "miniosecret"
+    ports:
+      - "9090:9001"
+    volumes:
+      - litellm_enterprise_minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  # =============================================
+  #  PostgreSQL for Langfuse
+  # =============================================
+  langfuse-db:
+    image: postgres:16-alpine
+    container_name: litellm-enterprise-langfuse-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: "langfuse123"
+    volumes:
+      - litellm_enterprise_langfuse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d langfuse -U langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   litellm_enterprise_pgdata:
   litellm_enterprise_qdrant:
+  litellm_enterprise_langfuse_pgdata:
+  litellm_enterprise_clickhouse:
+  litellm_enterprise_clickhouse_logs:
+  litellm_enterprise_minio:

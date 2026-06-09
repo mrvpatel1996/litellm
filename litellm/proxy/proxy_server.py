@@ -1772,8 +1772,9 @@ def mount_swagger_ui():
 mount_swagger_ui()
 
 docs_url = _get_docs_url()
-root_redirect_url: Optional[str] = os.getenv("ROOT_REDIRECT_URL")
-if docs_url != "/" and root_redirect_url is not None:
+root_redirect_url: Optional[str] = os.getenv("ROOT_REDIRECT_URL", "/ui")
+
+if docs_url != "/":
 
     @app.get("/", include_in_schema=False)
     async def root_redirect():

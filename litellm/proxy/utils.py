@@ -5764,7 +5764,11 @@ def _get_docs_url() -> Optional[str]:
 
     - If DOCS_URL is set, return it.
     - If NO_DOCS is True, return None.
-    - Otherwise, default to "/".
+    - Otherwise, default to "/docs".
+
+    Note: We default to "/docs" instead of "/" so that the root path "/"
+    can redirect to the LiteLLM Admin UI ("/ui") rather than showing
+    Swagger docs on error or startup issues.
     """
     if docs_url := os.getenv("DOCS_URL"):
         return docs_url
@@ -5772,7 +5776,7 @@ def _get_docs_url() -> Optional[str]:
     if str_to_bool(os.getenv("NO_DOCS")) is True:
         return None
 
-    return "/"
+    return "/docs"
 
 
 def _get_openapi_url() -> Optional[str]:
