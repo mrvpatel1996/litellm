@@ -33,7 +33,6 @@ RUN uv sync --frozen --no-install-project --no-install-workspace \
     --extra proxy \
     --extra proxy-runtime \
     --extra extra_proxy \
-    --extra fastembed \
     --python python3.12
 
 # Copy full source tree
@@ -44,8 +43,10 @@ RUN uv sync --frozen --no-default-groups --no-editable \
     --extra proxy \
     --extra proxy-runtime \
     --extra extra_proxy \
-    --extra fastembed \
     --python python3.12
+
+# Install fastembed for semantic cache embeddings (optional, pip since not in extras)
+RUN .venv/bin/pip install --no-cache-dir fastembed || true
 
 # Pre-download fastembed ONNX models (bakes into image, no cold-start)
 RUN .venv/bin/python -c "from fastembed import TextEmbedding, SparseTextEmbedding; \
