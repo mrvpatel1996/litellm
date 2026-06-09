@@ -133,6 +133,8 @@ _VIDEO_CALL_TYPES = frozenset(
     {
         CallTypes.create_video.value,
         CallTypes.acreate_video.value,
+        CallTypes.video_edit.value,
+        CallTypes.avideo_edit.value,
         CallTypes.video_remix.value,
         CallTypes.avideo_remix.value,
     }
@@ -2423,12 +2425,11 @@ class BaseTokenUsageProcessor:
                     if not attr.startswith("_") and not callable(
                         getattr(usage.completion_tokens_details, attr)
                     ):
-                        current_val = getattr(
-                            combined.completion_tokens_details, attr, 0
+                        current_val = (
+                            getattr(combined.completion_tokens_details, attr, 0) or 0
                         )
-                        new_val = getattr(usage.completion_tokens_details, attr, 0)
-
-                        if new_val is not None and current_val is not None:
+                        new_val = getattr(usage.completion_tokens_details, attr, 0) or 0
+                        if isinstance(new_val, (int, float)):
                             setattr(
                                 combined.completion_tokens_details,
                                 attr,
