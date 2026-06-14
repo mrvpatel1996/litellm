@@ -1,10 +1,10 @@
-# ── LiteLLM Enterprise Fork ── Docker Config ──
-# For docker-compose.enterprise.yml — uses Docker service hostnames.
+# ── LiteLLM Enterprise Fork ── Production Config for Coolify ──
+# Uses environment variables — set these in Coolify's "Environment Variables" section.
 #
-# Services:
+# Services (Docker network):
 #   - db: PostgreSQL on port 5432 (internal)
 #   - qdrant: Qdrant on port 6333 (internal)
-#   - litellm: Proxy on port 4000
+#   - searxng: SearXNG on port 8080 (internal)
 
 model_list:
   # Chat model via OpenRouter
