@@ -7,7 +7,27 @@
 #   - litellm: Proxy on port 4000
 
 model_list:
-  # Chat model via OpenRouter
+  # ── Free Models via OpenRouter ──
+  # NOTE: nemotron-3-ultra is a 550B model — free tier queue can take 60-120s
+  - model_name: nemotron-3-ultra
+    litellm_params:
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      api_key: os.environ/OPENROUTER_API_KEY
+      request_timeout: 600
+      max_retries: 1
+      timeout: 600
+
+  - model_name: laguna-m1
+    litellm_params:
+      model: openrouter/poolside/laguna-m.1:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: nex-n2-pro
+    litellm_params:
+      model: openrouter/nex-agi/nex-n2-pro:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ── Paid Model via OpenRouter ──
   - model_name: gpt-4o
     litellm_params:
       model: openrouter/openai/gpt-4o
@@ -47,6 +67,7 @@ search_tools:
 
 # ─── LLM Response Caching (Cost Savings) ────────────────────
 litellm_settings:
+  request_timeout: 600
   cache: true
   cache_params:
     type: "qdrant-semantic"
